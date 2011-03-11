@@ -98,7 +98,28 @@ module CollectiveIdea #:nodoc:
           has_many :audits, :as => :auditable, :order => "#{Audit.quoted_table_name}.version"
           attr_protected :audit_ids if options[:protect]
           Audit.audited_class_names << self.to_s
+          
+          if options[:parent]
+            parent_class = options[:parent].to_s.classify.constantize
+            auditable_children_association = ( class_name.tableize.singularize + '_audits' ).to_sym
+            
+            parent_class.class_eval <<-EOS
+              has_many :#{auditable_children_association},
+              :as => :auditable_parent,
+              :order => '#{Audit.quoted_table_name}.version desc',
+              :class_name => 'Audit'
 
+              alias :child_record_audits :#{auditable_children_association}
+              def audited_parent?
+                true
+              end
+            EOS
+            
+            write_inheritable_attribute :auditable_parent, options[:parent]
+          else
+            write_inheritable_attribute :auditable_parent, nil
+          end
+          
           after_create  :audit_create if !options[:on] || (options[:on] && options[:on].include?(:create))
           before_update :audit_update if !options[:on] || (options[:on] && options[:on].include?(:update))
           after_destroy :audit_destroy if !options[:on] || (options[:on] && options[:on].include?(:destroy))
@@ -178,7 +199,16 @@ module CollectiveIdea #:nodoc:
           end
         end
 
-        private
+      private
+        
+        def auditable_parent
+          case ( possible_parent = self.class.read_inheritable_attribute(:auditable_parent) )
+          when Symbol
+            send( possible_parent )
+          else
+            nil
+          end
+        end
 
         def audited_changes
           changed_attributes.except(*non_audited_columns).inject({}) do |changes,(attr, old_value)|
@@ -202,19 +232,19 @@ module CollectiveIdea #:nodoc:
 
         def audit_create
           write_audit(:action => 'create', :changes => audited_attributes, 
-            :comment => audit_comment)
+            :comment => audit_comment, :auditable_parent => auditable_parent)
         end
 
         def audit_update
           unless (changes = audited_changes).empty?
             write_audit(:action => 'update', :changes => changes, 
-              :comment => audit_comment)
+              :comment => audit_comment, :auditable_parent => auditable_parent)
           end
         end
 
         def audit_destroy
           write_audit(:action => 'destroy', :changes => audited_attributes,
-            :comment => audit_comment)
+            :comment => audit_comment, :auditable_parent => auditable_parent)
         end
 
         def write_audit(attrs)
